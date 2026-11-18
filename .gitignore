@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+# personal shot data
+data/
+*.db
+*.sqlite*
+# third-party FCC documents (not ours to redistribute)
+*.pdf
+
+# raw network/USB probe output (contains local network details)
+findings/

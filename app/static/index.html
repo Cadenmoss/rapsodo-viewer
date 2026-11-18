@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rapsodo Viewer</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#fff; --ink:#16202c; --muted:#6a7787; --line:#dde3ea;
+  --accent:#c8102e; --accent2:#1d6fa5; --good:#1c7c4a; --warn:#9a6700; --warnbg:#fff8e6;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#11161c; --panel:#171e26; --ink:#e8edf3; --muted:#93a1b1; --line:#2a3542;
+  --accent:#ff5a6e; --accent2:#5bb0e5; --good:#4cc487; --warn:#e8c168; --warnbg:#2a2415;
+}}
+:root[data-theme="dark"]{
+  --bg:#11161c; --panel:#171e26; --ink:#e8edf3; --muted:#93a1b1; --line:#2a3542;
+  --accent:#ff5a6e; --accent2:#5bb0e5; --good:#4cc487; --warn:#e8c168; --warnbg:#2a2415;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+header{padding:18px 16px;border-bottom:1px solid var(--line);background:var(--panel);
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+h1{font-size:19px;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:13px}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+.banner{border:1px solid var(--line);background:var(--warnbg);color:var(--warn);
+  padding:12px 14px;border-radius:8px;font-size:13.5px;margin-bottom:16px}
+.banner b{color:inherit}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.tile .k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.tile .v{font-size:26px;font-weight:650;margin-top:4px;font-variant-numeric:tabular-nums}
+.tile .u{font-size:13px;color:var(--muted);font-weight:400}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+.card h2{font-size:14px;margin:0 0 12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+select,button{font:inherit;padding:7px 10px;border-radius:7px;border:1px solid var(--line);
+  background:var(--panel);color:var(--ink)}
+button{cursor:pointer}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:14px}
+th,td{text-align:right;padding:7px 9px;border-bottom:1px solid var(--line)}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+tbody tr:hover{background:var(--bg)}
+.empty{color:var(--muted);text-align:center;padding:34px 12px}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:760px){.charts{grid-template-columns:1fr}.wrap{padding:12px}}
+svg{width:100%;height:auto;display:block}
+.ax{stroke:var(--line)}
+.axt{fill:var(--muted);font-size:10px}
+code{background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12.5px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Rapsodo Viewer</h1>
+  <span class="sub">RBB1.0 &middot; hitting &middot; local only</span>
+  <span style="margin-left:auto"><select id="sess"></select></span>
+</header>
+<div class="wrap">
+  <div id="banner"></div>
+  <div class="grid" id="tiles"></div>
+  <div class="charts">
+    <div class="card"><h2>Exit velocity by shot</h2><div id="c-ev"></div></div>
+    <div class="card"><h2>Launch angle vs exit velocity</h2><div id="c-sc"></div></div>
+  </div>
+  <div class="card"><h2>Spray</h2><div id="c-spray"></div></div>
+  <div class="card"><h2>Shots</h2><div id="tbl"></div></div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+// The DB stores SI, because that is what the Rapsodo SDK emits:
+//   speed = m/s, distances = metres, spin = rpm already, angles = degrees.
+// Convert here, at the display boundary, so storage keeps one source of truth.
+const MS_TO_MPH=2.2369363, M_TO_FT=3.28084;
+const toDisplay=r=>({...r,
+  total_speed: r.total_speed==null?null:r.total_speed*MS_TO_MPH,
+  carry:       r.carry==null?null:r.carry*M_TO_FT,
+  side:        r.side==null?null:r.side*M_TO_FT,
+  max_height:  r.max_height==null?null:r.max_height*M_TO_FT,
+});
+const fmt=(v,d=1)=>v==null||isNaN(v)?"—":Number(v).toFixed(d);
+let shots=[];
+
+async function j(u,o){const r=await fetch(u,o);return r.json();}
+
+async function boot(){
+  const st=await j('/api/status');
+  if(!st.live.available){
+    $('#banner').innerHTML='<div class="banner"><b>No live device connected.</b> '+
+      'Live capture runs through the Rapsodo SDK bridge on a Windows machine next to the unit '+
+      '(app/adapters/ripe_sdk.py), which posts shots here. This view shows stored data only. '+
+      'Nothing is estimated or synthesised.</div>';
+  }
+  const ss=await j('/api/sessions');
+  const sel=$('#sess');
+  if(!ss.length){
+    sel.innerHTML='<option>no sessions</option>';
+    render([]);return;
+  }
+  sel.innerHTML=ss.map(s=>`<option value="${s.id}">${s.name} — ${s.shot_count} shots</option>`).join('');
+  sel.onchange=load; load();
+}
+async function load(){
+  const id=$('#sess').value; if(!id||isNaN(id))return;
+  shots=await j('/api/shots?session='+id); render(shots);
+}
+
+function render(rawRows){
+  const rows = rawRows.map(toDisplay);   // SI -> mph/ft for display only
+  const nums=k=>rows.map(r=>r[k]).filter(v=>v!=null&&!isNaN(v));
+  const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
+  const ev=nums('total_speed'), la=nums('launch_angle'), di=nums('carry');
+  const hard=ev.filter(v=>v>=95).length;
+  $('#tiles').innerHTML=[
+    ['Shots',rows.length,'',0],
+    ['Avg exit velo',avg(ev),'mph',1],
+    ['Max exit velo',ev.length?Math.max(...ev):null,'mph',1],
+    ['Avg launch angle',avg(la),'°',1],
+    ['Avg distance',avg(di),'ft',0],
+    ['Hard hit ≥95',rows.length?100*hard/Math.max(ev.length,1):null,'%',0],
+  ].map(([k,v,u,d])=>`<div class="tile"><div class="k">${k}</div><div class="v">${fmt(v,d)}<span class="u"> ${u}</span></div></div>`).join('');
+
+  if(!rows.length){
+    $('#tbl').innerHTML='<div class="empty">No shots yet.<br><br>Import a CSV:<br><code>python3 app/server.py --import yourfile.csv</code></div>';
+    ['#c-ev','#c-sc','#c-spray'].forEach(s=>$(s).innerHTML='<div class="empty">No data</div>');
+    return;
+  }
+  $('#tbl').innerHTML='<table><thead><tr><th>#</th><th>Speed</th><th>Launch °</th>'+
+    '<th>Horiz °</th><th>Carry ft</th><th>Spin rpm</th><th>Back</th><th>Side</th>'+
+    '<th>Axis °</th><th>Conf</th><th>Type</th></tr></thead><tbody>'+
+    rows.map(r=>`<tr><td>${r.seq}</td><td>${fmt(r.total_speed)}</td><td>${fmt(r.launch_angle)}</td>
+      <td>${fmt(r.horizontal_angle)}</td><td>${fmt(r.carry,0)}</td><td>${fmt(r.total_spin,0)}</td>
+      <td>${fmt(r.back_spin,0)}</td><td>${fmt(r.side_spin,0)}</td><td>${fmt(r.spin_axis)}</td>
+      <td>${r.total_speed_confidence!=null?fmt(r.total_speed_confidence,2):'—'}</td>
+      <td>${r.hit_type||'—'}</td></tr>`).join('')+'</tbody></table>';
+  barEV(rows); scatter(rows); spray(rows);
+}
+
+function svg(w,h,inner){return `<svg viewBox="0 0 ${w} ${h}" role="img">${inner}</svg>`;}
+
+function barEV(rows){
+  const W=520,H=240,P=34, d=rows.map(r=>r.total_speed);
+  const mx=Math.max(...d.filter(v=>v!=null),1), n=rows.length;
+  const bw=Math.max(2,(W-P-8)/n-2);
+  let g='';
+  [0,.25,.5,.75,1].forEach(f=>{const y=H-P-(H-P-14)*f;
+    g+=`<line class="ax" x1="${P}" y1="${y}" x2="${W-4}" y2="${y}"/>`+
+       `<text class="axt" x="2" y="${y+3}">${(mx*f).toFixed(0)}</text>`;});
+  rows.forEach((r,i)=>{ if(r.total_speed==null)return;
+    const h=(H-P-14)*(r.total_speed/mx), x=P+i*((W-P-8)/n)+1;
+    g+=`<rect x="${x}" y="${H-P-h}" width="${bw}" height="${h}" rx="1.5" fill="var(--accent)" opacity="0.85"><title>#${r.seq}: ${fmt(r.total_speed)} mph</title></rect>`;});
+  g+=`<text class="axt" x="${P}" y="${H-P+14}">shot 1</text><text class="axt" x="${W-40}" y="${H-P+14}">${n}</text>`;
+  $('#c-ev').innerHTML=svg(W,H,g);
+}
+
+function scatter(rows){
+  const W=520,H=240,P=34;
+  const xs=rows.map(r=>r.total_speed), ys=rows.map(r=>r.launch_angle);
+  const xv=xs.filter(v=>v!=null), yv=ys.filter(v=>v!=null);
+  if(!xv.length||!yv.length){$('#c-sc').innerHTML='<div class="empty">Needs EV + LA</div>';return;}
+  const x0=Math.min(...xv)-3,x1=Math.max(...xv)+3,y0=Math.min(...yv,-10)-3,y1=Math.max(...yv)+3;
+  const X=v=>P+(W-P-10)*(v-x0)/(x1-x0||1), Y=v=>H-P-(H-P-14)*(v-y0)/(y1-y0||1);
+  let g='';
+  [0,.5,1].forEach(f=>{const y=Y(y0+(y1-y0)*f);
+    g+=`<line class="ax" x1="${P}" y1="${y}" x2="${W-4}" y2="${y}"/><text class="axt" x="2" y="${y+3}">${(y0+(y1-y0)*f).toFixed(0)}°</text>`});
+  // the 10-25 degree "line drive" band
+  if(y1>10&&y0<25) g+=`<rect x="${P}" y="${Y(Math.min(25,y1))}" width="${W-P-10}" height="${Math.abs(Y(Math.max(10,y0))-Y(Math.min(25,y1)))}" fill="var(--good)" opacity="0.10"/>`;
+  rows.forEach(r=>{ if(r.total_speed==null||r.launch_angle==null)return;
+    g+=`<circle cx="${X(r.total_speed)}" cy="${Y(r.launch_angle)}" r="4" fill="var(--accent2)" opacity="0.8"><title>#${r.seq}: ${fmt(r.total_speed)} mph @ ${fmt(r.launch_angle)}°</title></circle>`;});
+  g+=`<text class="axt" x="${P}" y="${H-8}">${x0.toFixed(0)} mph</text><text class="axt" x="${W-58}" y="${H-8}">${x1.toFixed(0)} mph</text>`;
+  $('#c-sc').innerHTML=svg(W,H,g);
+}
+
+function spray(rows){
+  const W=520,H=300, ox=W/2, oy=H-24, R=H-54;
+  let g=`<path d="M ${ox} ${oy} L ${ox-R*Math.sin(Math.PI/4)} ${oy-R*Math.cos(Math.PI/4)} A ${R} ${R} 0 0 1 ${ox+R*Math.sin(Math.PI/4)} ${oy-R*Math.cos(Math.PI/4)} Z" fill="var(--good)" opacity="0.08" stroke="var(--line)"/>`;
+  [-45,-22.5,0,22.5,45].forEach(a=>{const t=a*Math.PI/180;
+    g+=`<line class="ax" x1="${ox}" y1="${oy}" x2="${ox+R*Math.sin(t)}" y2="${oy-R*Math.cos(t)}"/>`;});
+  const ds=rows.map(r=>r.carry).filter(v=>v!=null);
+  const md=ds.length?Math.max(...ds):350;
+  rows.forEach(r=>{ if(r.horizontal_angle==null)return;
+    const t=Math.max(-45,Math.min(45,r.horizontal_angle))*Math.PI/180;
+    const rad=R*((r.carry!=null?r.carry:md*0.55)/(md||1));
+    g+=`<circle cx="${ox+rad*Math.sin(t)}" cy="${oy-rad*Math.cos(t)}" r="4.5" fill="var(--accent)" opacity="0.8"><title>#${r.seq}: ${fmt(r.horizontal_angle)}°, ${fmt(r.carry,0)} ft</title></circle>`;});
+  g+=`<text class="axt" x="6" y="${H-6}">pull</text><text class="axt" x="${W-40}" y="${H-6}">oppo</text>`;
+  $('#c-spray').innerHTML=svg(W,H,g);
+}
+boot();
+</script>
+</body>
+</html>
