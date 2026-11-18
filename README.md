@@ -1,5 +1,8 @@
 # Rapsodo RBB1.0 — local data viewer
 
+![Rapsodo viewer showing 60 synthetic demo shots](docs/screenshot.png)
+*Screenshot uses a synthetic demo CSV, not real shot data.*
+
 A self-hosted viewer for a Rapsodo Baseball **HITTING** 1.0 launch monitor.
 Runs entirely on `127.0.0.1`. No Rapsodo account, no cloud, no subscription.
 Your data lives in a local SQLite file you own.
